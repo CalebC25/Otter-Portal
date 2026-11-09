@@ -36,6 +36,21 @@
 </head>
 <body>
 
+<!-- CSV DOWNLOAD BUTTONS -->
+<button id="csv-btn" style="
+  position: fixed; bottom: 1rem; left: 1rem; z-index: 10000;
+  padding: 8px 16px; border: none; border-radius: 6px;
+  background: #4ecca3; color: #1a1a2e; font-weight: bold;
+  cursor: pointer; font-size: 0.85rem; display: none;
+">⬇ Download GPS</button>
+
+<button id="csv-imu-btn" style="
+  position: fixed; bottom: 1rem; left: 11rem; z-index: 10000;
+  padding: 8px 16px; border: none; border-radius: 6px;
+  background: #4ecdc4; color: #1a1a2e; font-weight: bold;
+  cursor: pointer; font-size: 0.85rem; display: none;
+">⬇ Download IMU</button>
+
 <!-- Login overlay -->
 <div id="login-screen" style="
   display: flex; align-items: center; justify-content: center;
@@ -47,7 +62,7 @@
     box-shadow: 0 4px 24px rgba(0,0,0,0.5); width: 320px;
   ">
     <h2 style="margin:0 0 1.5rem; text-align:center; color:#4ecca3;">
-      🐾 Wildlife Tracker
+       Otter Portal
     </h2>
     <input id="login-email" type="email" placeholder="Email"
       style="width:100%; padding:10px; margin-bottom:10px;
@@ -71,6 +86,13 @@
 </div>
 
   <div id="map"></div>
+
+<button id="logout-btn" style="
+  display:none; position:fixed; bottom:1rem; right:1rem; z-index:10000;
+  padding:8px 16px; border:none; border-radius:6px;
+  background:#e74c3c; color:white; cursor:pointer; font-size:0.85rem;
+">Logout</button>
+
 
   <div id="controls">
     <strong>Otter Tracker</strong>
@@ -102,14 +124,15 @@ async function handleLogin() {
   const errorEl  = document.getElementById('login-error');
   errorEl.textContent = '';
 
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+
+  console.log('Auth response data:', data);
+  console.log('Auth response error:', error);
 
   if (error) {
     errorEl.textContent = error.message;
   }
-  // If success, the onAuthStateChange listener below handles the rest
 }
-
 document.getElementById('login-btn').addEventListener('click', handleLogin);
 
 // Also allow Enter key to submit
@@ -127,11 +150,15 @@ supabase.auth.onAuthStateChange((event, session) => {
     // Logged in — hide login, show map + logout
     loginScreen.style.display = 'none';
     logoutBtn.style.display   = 'block';
+    document.getElementById('csv-btn').style.display = 'block';   // show on login
+    document.getElementById('csv-imu-btn').style.display = 'block';
     refreshMap();              // Load the data now that we're authenticated
   } else {
     // Logged out — show login, hide logout
     loginScreen.style.display = 'flex';
     logoutBtn.style.display   = 'none';
+    document.getElementById('csv-btn').style.display = 'none';    // hide on logout
+    document.getElementById('csv-imu-btn').style.display = 'none';
   }
 });
 
@@ -140,6 +167,8 @@ const { data: { session } } = await supabase.auth.getSession();
 if (session) {
   loginScreen.style.display = 'none';
   logoutBtn.style.display   = 'block';
+  document.getElementById('csv-btn').style.display = 'block';
+  document.getElementById('csv-imu-btn').style.display = 'block';
   refreshMap();
 }
 
@@ -199,11 +228,101 @@ async function loadDevices() {
 
 await loadDevices();
 
-<button id="logout-btn" style="
-  display:none; position:fixed; bottom:1rem; right:1rem; z-index:10000;
-  padding:8px 16px; border:none; border-radius:6px;
-  background:#e74c3c; color:white; cursor:pointer; font-size:0.85rem;
-">Logout</button>
+// Download CSV Function GPS
+
+async function downloadCsv() {
+  const deviceId = deviceSelect.value;
+
+  // Build query
+  let query = supabase
+    .from('gps_records')
+    .select('device_id, utc_epoch, lat, lon, fix_quality, hacc_m, siv, hdop, pdop')
+    .order('utc_epoch', { ascending: true });
+
+  // Filter to selected device (unless "All devices")
+  if (deviceId !== '__all__') {
+    query = query.eq('device_id', deviceId);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error('CSV export failed:', error);
+    alert('Export failed — check console for details.');
+    return;
+  }
+
+  if (!data || data.length === 0) {
+    alert('No data to export for this device.');
+    return;
+  }
+
+  // Convert to CSV
+  const headers = Object.keys(data[0]);
+  const csvRows = [headers.join(',')];
+  for (const row of data) {
+    csvRows.push(headers.map(h => row[h] ?? '').join(','));
+  }
+  const csvString = csvRows.join('\n');
+
+  // Trigger download
+  const blob = new Blob([csvString], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `gps_export_${deviceId}_${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+document.getElementById('csv-btn').addEventListener('click', downloadCsv);
+
+//// DOWNLOAD CSV FUNCTION IMU
+
+async function downloadImuCsv() {
+  const deviceId = deviceSelect.value;
+
+  let query = supabase
+    .from('imu_records')
+    .select('device_id, utc_epoch, accel_x, accel_y, accel_z, mag_x, mag_y, mag_z')
+    .order('utc_epoch', { ascending: true });
+
+  if (deviceId !== '__all__') {
+    query = query.eq('device_id', deviceId);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error('IMU CSV export failed:', error);
+    alert('IMU export failed — check console for details.');
+    return;
+  }
+
+  if (!data || data.length === 0) {
+    alert('No IMU data to export for this device.');
+    return;
+  }
+
+  const headers = Object.keys(data[0]);
+  const csvRows = [headers.join(',')];
+  for (const row of data) {
+    csvRows.push(headers.map(h => row[h] ?? '').join(','));
+  }
+  const csvString = csvRows.join('\n');
+
+  const blob = new Blob([csvString], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `imu_export_${deviceId}_${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+document.getElementById('csv-imu-btn').addEventListener('click', downloadImuCsv);
+
+
 
 // ---- GPS TRACK PLOTTING ----
 // Assign a color per device so multiple tags are distinguishable
