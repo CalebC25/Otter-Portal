@@ -36,6 +36,40 @@
 </head>
 <body>
 
+<!-- Login overlay -->
+<div id="login-screen" style="
+  display: flex; align-items: center; justify-content: center;
+  position: fixed; inset: 0; z-index: 10000;
+  background: #1a1a2e; color: #e0e0e0; font-family: system-ui, sans-serif;
+">
+  <div style="
+    background: #16213e; padding: 2rem; border-radius: 12px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.5); width: 320px;
+  ">
+    <h2 style="margin:0 0 1.5rem; text-align:center; color:#4ecca3;">
+      🐾 Wildlife Tracker
+    </h2>
+    <input id="login-email" type="email" placeholder="Email"
+      style="width:100%; padding:10px; margin-bottom:10px;
+        border:1px solid #334; border-radius:6px;
+        background:#0f3460; color:#e0e0e0; box-sizing:border-box;"
+    />
+    <input id="login-password" type="password" placeholder="Password"
+      style="width:100%; padding:10px; margin-bottom:10px;
+        border:1px solid #334; border-radius:6px;
+        background:#0f3460; color:#e0e0e0; box-sizing:border-box;"
+    />
+    <button id="login-btn" style="
+      width:100%; padding:10px; border:none; border-radius:6px;
+      background:#4ecca3; color:#1a1a2e; font-weight:bold;
+      cursor:pointer; font-size:1rem;
+    ">Sign In</button>
+    <p id="login-error" style="
+      color:#e74c3c; text-align:center; margin:0.75rem 0 0; font-size:0.85rem;
+    "></p>
+  </div>
+</div>
+
   <div id="map"></div>
 
   <div id="controls">
@@ -56,6 +90,58 @@ const SUPABASE_URL  = 'https://jqzqsxpnryfhuldlrcuq.supabase.co';  // your proje
 const SUPABASE_ANON = 'sb_publishable_2iYiS7kiqsdYm2yO2YIVaQ_XTe71Ft6';                          // paste from dashboard
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
+
+/* ── Auth ─────────────────────────────────────────────── */
+const loginScreen = document.getElementById('login-screen');
+const logoutBtn   = document.getElementById('logout-btn');
+const mapDiv      = document.getElementById('map');        // or whatever your map container id is
+
+async function handleLogin() {
+  const email    = document.getElementById('login-email').value;
+  const password = document.getElementById('login-password').value;
+  const errorEl  = document.getElementById('login-error');
+  errorEl.textContent = '';
+
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+
+  if (error) {
+    errorEl.textContent = error.message;
+  }
+  // If success, the onAuthStateChange listener below handles the rest
+}
+
+document.getElementById('login-btn').addEventListener('click', handleLogin);
+
+// Also allow Enter key to submit
+document.getElementById('login-password').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') handleLogin();
+});
+
+document.getElementById('logout-btn').addEventListener('click', async () => {
+  await supabase.auth.signOut();
+});
+
+/* Listen for auth state changes */
+supabase.auth.onAuthStateChange((event, session) => {
+  if (session) {
+    // Logged in — hide login, show map + logout
+    loginScreen.style.display = 'none';
+    logoutBtn.style.display   = 'block';
+    refreshMap();              // Load the data now that we're authenticated
+  } else {
+    // Logged out — show login, hide logout
+    loginScreen.style.display = 'flex';
+    logoutBtn.style.display   = 'none';
+  }
+});
+
+/* Check for existing session on page load */
+const { data: { session } } = await supabase.auth.getSession();
+if (session) {
+  loginScreen.style.display = 'none';
+  logoutBtn.style.display   = 'block';
+  refreshMap();
+}
 
 
 // ---- MAP SETUP ----
@@ -112,6 +198,12 @@ async function loadDevices() {
 }
 
 await loadDevices();
+
+<button id="logout-btn" style="
+  display:none; position:fixed; bottom:1rem; right:1rem; z-index:10000;
+  padding:8px 16px; border:none; border-radius:6px;
+  background:#e74c3c; color:white; cursor:pointer; font-size:0.85rem;
+">Logout</button>
 
 // ---- GPS TRACK PLOTTING ----
 // Assign a color per device so multiple tags are distinguishable
@@ -232,7 +324,7 @@ deviceSelect.addEventListener('change', refreshMap);
 document.getElementById('refresh-btn').addEventListener('click', refreshMap);
 
 // Initial load
-await refreshMap();
+// await refreshMap();
 
   </script>
 
