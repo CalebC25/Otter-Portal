@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Otter Tracking Portal</title>
+
+  <!-- Leaflet CSS + JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; font-family: system-ui, sans-serif; }
+    #map { height: 100%; width: 100%; }
+
+    /* Control panel overlaid on the map */
+    #controls {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 1000;
+      background: white;
+      padding: 12px 16px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      max-width: 280px;
+    }
+    #controls select, #controls button {
+      width: 100%;
+      margin-top: 8px;
+      padding: 6px;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="map"></div>
+
+  <div id="controls">
+    <strong>Otter Tracker</strong>
+    <select id="device-select">
+      <option value="">Loading devices…</option>
+    </select>
+    <button id="refresh-btn">Refresh</button>
+  </div>
+
+  <script type="module">
+    // --- Your application code goes here (see blocks below) ---
+
+// ---- SUPABASE CONNECTION ----
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+
+const SUPABASE_URL  = 'https://jqzqsxpnryfhuldlrcuq.supabase.co';  // your project URL
+const SUPABASE_ANON = 'sb_publishable_2iYiS7kiqsdYm2yO2YIVaQ_XTe71Ft6';                          // paste from dashboard
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
+
+
+// ---- MAP SETUP ----
+// Esri World Imagery — free satellite tiles, no API key needed
+const satelliteTiles = L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  {
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics',
+    maxZoom: 19,
+  }
+);
+
+// Optional: a labels-only layer on top of satellite imagery so you can
+// read place names. Comment this out if you don't want labels.
+const labelTiles = L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+  {
+    attribution: 'Labels &copy; Esri',
+    maxZoom: 19,
+    pane: 'shadowPane',
+  }
+);
+
+// Center on your study area — adjust lat/lon and zoom to fit
+const map = L.map('map', {
+  center: [30.668, -96.365],  //
+  zoom: 15,
+  layers: [satelliteTiles, labelTiles],
+});
+
+// Layer group that holds all the tracks — cleared on each refresh
+const trackGroup = L.layerGroup().addTo(map);
+
+
+// ---- DEVICE PICKER ----
+const deviceSelect = document.getElementById('device-select');
+
+async function loadDevices() {
+  const { data, error } = await supabase
+    .from('devices')
+    .select('device_id, device_name')
+    .order('device_id');
+
+  if (error) {
+    console.error('Failed to load devices:', error);
+    return;
+  }
+
+  deviceSelect.innerHTML = '<option value="__all__">All devices</option>';
+  for (const d of data) {
+    const label = d.device_name || d.device_id;
+    deviceSelect.innerHTML += `<option value="${d.device_id}">${label}</option>`;
+  }
+}
+
+await loadDevices();
+
+// ---- GPS TRACK PLOTTING ----
+// Assign a color per device so multiple tags are distinguishable
+const COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#42d4f4'];
+let colorIndex = 0;
+
+function getColor() {
+  return COLORS[colorIndex++ % COLORS.length];
+}
+
+async function plotGpsTrack(deviceId, color) {
+  // Fetch qualifying GPS fixes, sorted by time
+  const { data, error } = await supabase
+    .from('gps_records')
+    .select('utc_epoch, lat, lon, fix_quality, hacc_m, siv')
+    .eq('device_id', deviceId)
+    .order('utc_epoch', { ascending: true });
+
+  if (error) {
+    console.error(`GPS query failed for ${deviceId}:`, error);
+    return;
+  }
+  if (!data || data.length === 0) return;
+
+  // Draw the track line
+  const latlngs = data.map(r => [r.lat, r.lon]);
+  const line = L.polyline(latlngs, {
+    color: color,
+    weight: 3,
+    opacity: 0.8,
+  }).addTo(trackGroup);
+
+  // Add circle markers at each GPS fix
+  for (const r of data) {
+    const time = new Date(r.utc_epoch * 1000).toLocaleString();
+    L.circleMarker([r.lat, r.lon], {
+      radius: 5,
+      color: color,
+      fillColor: color,
+      fillOpacity: 0.7,
+    })
+      .bindPopup(
+        `<b>${deviceId}</b><br>` +
+        `${time}<br>` +
+        `Accuracy: ${r.hacc_m} m<br>` +
+        `Satellites: ${r.siv}`
+      )
+      .addTo(trackGroup);
+  }
+
+  // Fit the map to show the full track
+  map.fitBounds(line.getBounds().pad(0.1));
+}
+
+// ---- LATEST POSITION OVERVIEW ----
+async function plotAllDevicesLatest() {
+  // Supabase doesn't support DISTINCT ON directly via the client,
+  // so we fetch recent fixes and deduplicate in JS.
+  // For a small number of devices this is fine.
+  const { data, error } = await supabase
+    .from('gps_records')
+    .select('device_id, utc_epoch, lat, lon, fix_quality, hacc_m')
+    .eq('fix_quality', 'qualifying')
+    .order('utc_epoch', { ascending: false })
+    .limit(200);
+
+  if (error) {
+    console.error('Overview query failed:', error);
+    return;
+  }
+
+  // Keep only the most recent fix per device
+  const latest = new Map();
+  for (const r of data) {
+    if (!latest.has(r.device_id)) {
+      latest.set(r.device_id, r);
+    }
+  }
+
+  colorIndex = 0;
+  for (const [devId, r] of latest) {
+    const color = getColor();
+    const time = new Date(r.utc_epoch * 1000).toLocaleString();
+    L.marker([r.lat, r.lon])
+      .bindPopup(
+        `<b>${devId}</b><br>` +
+        `Last fix: ${time}<br>` +
+        `Accuracy: ${r.hacc_m} m`
+      )
+      .addTo(trackGroup);
+  }
+
+  // Fit map to all markers
+  if (latest.size > 0) {
+    const bounds = L.latLngBounds([...latest.values()].map(r => [r.lat, r.lon]));
+    map.fitBounds(bounds.pad(0.2));
+  }
+}
+
+// ---- EVENT HANDLERS ----
+async function refreshMap() {
+  trackGroup.clearLayers();  // remove old tracks
+  colorIndex = 0;
+
+  const selected = deviceSelect.value;
+
+  if (selected === '__all__') {
+    // Show latest position for every device
+    await plotAllDevicesLatest();
+  } else {
+    // Show full GPS track for the selected device
+    const color = getColor();
+    await plotGpsTrack(selected, color);
+  }
+}
+
+deviceSelect.addEventListener('change', refreshMap);
+document.getElementById('refresh-btn').addEventListener('click', refreshMap);
+
+// Initial load
+await refreshMap();
+
+  </script>
+
+</body>
+</html>
